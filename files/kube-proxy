@@ -1,0 +1,32 @@
+#!/bin/sh
+
+# PROVIDE: kube_proxy
+# REQUIRE: NETWORKING pf kubelet
+# KEYWORD: shutdown
+#
+# kube-proxy (pf mode) runs on the host, not as a DaemonSet pod: a hostNetwork jail
+# shares the host network stack (vnet=inherit) and FreeBSD only grants PRIV_NETINET_PF
+# to jails with their own VNET (kern_jail.c), so pfctl's netlink calls fail with EPERM.
+#
+# kube_proxy_enable (bool):	Set to YES to enable kube-proxy
+# kube_proxy_config (path):	KubeProxyConfiguration file
+# kube_proxy_args (str):	Extra kube-proxy flags (not _flags: rc.subr passes those to daemon(8))
+
+. /etc/rc.subr
+
+name="kube_proxy"
+rcvar=kube_proxy_enable
+load_rc_config "$name"
+
+: ${kube_proxy_enable:="NO"}
+: ${kube_proxy_log:="/var/log/kube-proxy.log"}
+: ${kube_proxy_config:="/usr/local/etc/kube-proxy/config.conf"}
+: ${kube_proxy_args:="--hostname-override=$(hostname)"}
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+command="/usr/sbin/daemon"
+pidfile="/var/run/${name}_daemon.pid"
+procname="/usr/sbin/daemon"
+command_args="-o ${kube_proxy_log} -f -P ${pidfile} -p /var/run/${name}.pid -H /usr/local/bin/kube-proxy --config=${kube_proxy_config} ${kube_proxy_args}"
+
+run_rc_command "$1"

@@ -163,6 +163,9 @@ echo "Building kubeadm, a tool for creating and managing clusters"
 	git checkout ${K8S_BRANCH}
 	gmake WHAT=cmd/kubeadm
 	sudo install _output/local/go/bin/kubeadm /usr/local/bin
+	# kube-proxy runs on the host (see files/kube-proxy for why)
+	gmake WHAT=cmd/kube-proxy
+	sudo install _output/local/go/bin/kube-proxy /usr/local/bin
 )
 
 # Build a single node cluster using kubeadm
@@ -208,6 +211,33 @@ kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 # Install a simple network configuration to allow allocating IP addresses for
 # pods
 sudo install -m 644 files/10-kubetest.conflist /usr/local/etc/cni/net.d
+
+# kube-proxy (pf mode) as a host service instead of the kubeadm DaemonSet: a hostNetwork
+# jail has no PRIV_NETINET_PF (FreeBSD grants it only to VNET jails), so pfctl gets EPERM.
+echo "Running kube-proxy on the host"
+kubectl -n kube-system patch ds kube-proxy \
+	-p '{"spec":{"template":{"spec":{"nodeSelector":{"bsdk8s.io/kube-proxy-in-pod":"true"}}}}}'
+sudo mkdir -p /usr/local/etc/kube-proxy
+kubectl -n kube-system get cm kube-proxy -o jsonpath='{.data.config\.conf}' | \
+	sed 's#/var/lib/kube-proxy/kubeconfig.conf#/usr/local/etc/kube-proxy/kubeconfig.conf#' | \
+	sudo tee /usr/local/etc/kube-proxy/config.conf > /dev/null
+kp_kc=/usr/local/etc/kube-proxy/kubeconfig.conf
+sudo kubectl config --kubeconfig=${kp_kc} set-cluster default \
+	--server=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}') \
+	--certificate-authority=/usr/local/etc/kubernetes/pki/ca.crt --embed-certs > /dev/null
+sudo kubectl config --kubeconfig=${kp_kc} set-credentials kube-proxy \
+	--token=$(kubectl -n kube-system create token kube-proxy --duration=8760h) > /dev/null
+sudo kubectl config --kubeconfig=${kp_kc} set-context default --cluster=default --user=kube-proxy > /dev/null
+sudo kubectl config --kubeconfig=${kp_kc} use-context default > /dev/null
+sudo chmod 600 ${kp_kc}
+sudo install -m 755 files/kube-proxy /usr/local/etc/rc.d/kube_proxy
+sudo sysrc kube_proxy_enable=YES
+sudo service kube_proxy restart
+
+# kubeadm's kubelet-finalize restarts the kubelet, which files new serving CSRs
+# (serverTLSBootstrap); approve them or kubectl exec/logs fail with a TLS error.
+sleep 5
+kubectl get csr --no-headers | awk '$NF ~ /Pending/ {print $1}' | xargs -r kubectl certificate approve
 
 echo "If everything worked right, the cluster should be live"
 kubectl get all -A

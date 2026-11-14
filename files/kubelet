@@ -50,8 +50,12 @@ load_rc_config "$name"
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
 
 command="/usr/local/bin/kubelet"
-pidfile="/var/run/$name.pid"
-procname="/usr/local/bin/kubelet"
+# Track the daemon(8) supervisor, not the kubelet child: after SIGTERM the child lingers as a
+# zombie "(kubelet)" until daemon reaps it; kill -0 says it's gone but ps still matches it, so
+# `service kubelet restart` (used by kubeadm) failed with "already running?".
+pidfile="/var/run/${name}_daemon.pid"
+child_pidfile="/var/run/$name.pid"
+procname="/usr/sbin/daemon"
 start_cmd="kubelet_start"
 
 kubelet_start()
@@ -61,7 +65,7 @@ kubelet_start()
 	startmsg "Waiting for CRI-O"
 	sleep 1
     done
-    /usr/sbin/daemon -o ${kubelet_log} -f -p ${pidfile} -H ${command} ${kubelet_options}
+    /usr/sbin/daemon -o ${kubelet_log} -f -P ${pidfile} -p ${child_pidfile} -H ${command} ${kubelet_options}
 }
 
 run_rc_command "$1"
