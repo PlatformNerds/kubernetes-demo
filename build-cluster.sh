@@ -256,19 +256,40 @@ write_cni_config() {
 		echo "Waiting for this node's podCIDR"; sleep 2
 	done
 	p=${cidr%.*/*}
+	# kubeadm reset leaves the CNI bridge with its old address (e.g. a /16 from a
+	# single-node config); give it this node's gateway/prefix.
+	if ifconfig cni-kubetest >/dev/null 2>&1; then
+		sudo ifconfig cni-kubetest inet "${p}.1/${cidr#*/}"
+	fi
 	sed -e "s|10.244.0.0/16|${cidr}|" -e "s|10.244.0.2\"|${p}.2\"|" \
 	    -e "s|10.244.0.254|${p}.254|" -e "s|10.244.0.1\"|${p}.1\"|" files/10-kubetest.conflist |
 	    sudo tee /usr/local/etc/cni/net.d/10-kubetest.conflist > /dev/null
 	echo "CNI: pod subnet ${cidr}"
 }
 
-# host-gw routes to the other nodes' pod CIDRs (no-op on a single node)
+# host-gw routes to the other nodes' pod CIDRs (no-op on a single node).
+# Credentials: ServiceAccount kube-system/bsd-hostgw (nodes get/list/watch). The control
+# plane creates it; workers get its token as HOSTGW_TOKEN (printed on the control plane).
+write_hostgw_kubeconfig() { # server token
+	kc=/usr/local/etc/bsd-hostgw/kubeconfig
+	sudo mkdir -p /usr/local/etc/bsd-hostgw
+	sudo kubectl config --kubeconfig=$kc set-cluster default --server="https://$1" \
+		--certificate-authority=/usr/local/etc/kubernetes/pki/ca.crt --embed-certs > /dev/null
+	sudo kubectl config --kubeconfig=$kc set-credentials bsd-hostgw --token="$2" > /dev/null
+	sudo kubectl config --kubeconfig=$kc set-context default --cluster=default --user=bsd-hostgw > /dev/null
+	sudo kubectl config --kubeconfig=$kc use-context default > /dev/null
+	sudo chmod 600 $kc
+}
 install_hostgw() {
 	sudo install -m 755 files/bsd-hostgw /usr/local/libexec/bsd-hostgw
 	sudo install -m 755 files/bsd_hostgw /usr/local/etc/rc.d/bsd_hostgw
 	sudo sysrc bsd_hostgw_enable=YES
 	sudo service bsd_hostgw restart
 }
+
+# A CNI config left by a previous cluster (kubeadm reset does not remove it) would let
+# the first pods (e.g. CoreDNS) start with the wrong subnet before write_cni_config runs.
+sudo rm -f /usr/local/etc/cni/net.d/10-kubetest.conflist
 
 if [ -n "${JOIN_ENDPOINT:-}" ]; then
 	cat >kubeadm-join.yaml <<EOF
@@ -286,6 +307,11 @@ nodeRegistration:
 EOF
 	sudo kubeadm join --config ./kubeadm-join.yaml || exit 1
 	write_cni_config
+	if [ -n "${HOSTGW_TOKEN:-}" ]; then
+		write_hostgw_kubeconfig "${JOIN_ENDPOINT}" "${HOSTGW_TOKEN}"
+	else
+		echo "HOSTGW_TOKEN not set: no cross-node pod routes until it is configured"
+	fi
 	install_hostgw
 	echo "Joined. On the control plane, approve this node's kubelet serving CSR:"
 	echo "  kubectl get csr | awk '/Pending/ {print \$1}' | xargs kubectl certificate approve"
@@ -308,6 +334,25 @@ kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 # Install a simple network configuration to allow allocating IP addresses for
 # pods (per-node subnet) and the host-gw route daemon
 write_cni_config
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: bsd-hostgw, namespace: kube-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: bsd-hostgw}
+rules:
+- {apiGroups: [""], resources: ["nodes"], verbs: ["get", "list", "watch"]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: bsd-hostgw}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: bsd-hostgw}
+subjects: [{kind: ServiceAccount, name: bsd-hostgw, namespace: kube-system}]
+EOF
+hostgw_token=$(kubectl -n kube-system create token bsd-hostgw --duration=8760h)
+write_hostgw_kubeconfig "$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' | sed 's|https://||')" "${hostgw_token}"
 install_hostgw
 
 # kube-proxy (pf mode): a hostNetwork pod's jail has no PRIV_NETINET_PF (FreeBSD grants it only
@@ -344,5 +389,9 @@ fi
 sleep 5
 kubectl get csr --no-headers | awk '$NF ~ /Pending/ {print $1}' | xargs -r kubectl certificate approve
 
+echo "To add worker nodes, run on each (NODE_IP = the worker's cluster address):"
+echo "  NODE_IP=<ip> JOIN_ENDPOINT=... JOIN_TOKEN=... JOIN_CA_HASH=... HOSTGW_TOKEN=<token> ./build-cluster.sh <if>"
+echo "  join values: sudo kubeadm token create --print-join-command"
+echo "  HOSTGW_TOKEN: kubectl -n kube-system create token bsd-hostgw --duration=8760h"
 echo "If everything worked right, the cluster should be live"
 kubectl get all -A
