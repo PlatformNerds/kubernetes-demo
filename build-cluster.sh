@@ -173,7 +173,7 @@ fi
 	sudo install -m 755 files/kubelet /usr/local/etc/rc.d
 	cd kubernetes
 	git fetch origin ${K8S_BRANCH}
-	git checkout ${K8S_BRANCH}
+	git checkout -B ${K8S_BRANCH} origin/${K8S_BRANCH}
 	gmake WHAT=cmd/kubelet
 	sudo install _output/local/go/bin/kubelet /usr/local/bin
 	sudo sysrc kubelet_enable=YES
@@ -184,7 +184,7 @@ echo "Building kubeadm, a tool for creating and managing clusters"
 (
 	cd kubernetes
 	# bsdk8s branch carries kubelet + kube-proxy + kubeadm patches together
-	git checkout ${K8S_BRANCH}
+	git checkout -B ${K8S_BRANCH} origin/${K8S_BRANCH}
 	gmake WHAT=cmd/kubeadm
 	sudo install _output/local/go/bin/kubeadm /usr/local/bin
 	# kube-proxy runs on the host (see files/kube-proxy for why)
