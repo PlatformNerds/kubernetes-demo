@@ -15,6 +15,23 @@ BSDK8S_GIT_BASE=${BSDK8S_GIT_BASE:-https://github.com/PlatformNerds}
 CRIO_BRANCH=${CRIO_BRANCH:-bsdk8s-1.37}
 K8S_BRANCH=${K8S_BRANCH:-bsdk8s-v1.36.1}
 
+# Control-plane images. dfr publishes FreeBSD/amd64 images only. On other architectures (e.g. arm64 on
+# Apple Silicon) build them locally first with BSDKubernetes/scripts/build-images-freebsd.sh and set
+# IMAGE_REPO to the prefix used there (default ghcr.io/platformnerds).
+ARCH=$(uname -m)
+if [ "${ARCH}" = amd64 ]; then
+	IMAGE_REPO=${IMAGE_REPO:-ghcr.io/dfr}
+else
+	IMAGE_REPO=${IMAGE_REPO:-ghcr.io/platformnerds}
+	PAUSE_IMAGE=${PAUSE_IMAGE:-${IMAGE_REPO}/pause:3.10.2}
+	if ! sudo podman image exists ${IMAGE_REPO}/kube-apiserver:v1.36.1 2>/dev/null; then
+		echo "No ${ARCH} control-plane images found under ${IMAGE_REPO}; build them with"
+		echo "  sudo BSDKubernetes/scripts/build-images-freebsd.sh <bindir> ${IMAGE_REPO}"
+		exit 1
+	fi
+fi
+ETCD_TAG=${ETCD_TAG:-3.6.5-0}
+
 if [ "$(sysctl -n kern.racct.enable)" -eq 0 ]; then
 	echo 'RACCT is disabled; to enable, add kern.racct.enable="1" to /boot/loader.conf and reboot'
 	exit 1
@@ -88,7 +105,7 @@ fi
 	cd cri-tools
 	git pull
 	gmake
-	sudo install build/bin/freebsd/amd64/crictl /usr/local/bin
+	sudo install build/bin/freebsd/$(go env GOARCH)/crictl /usr/local/bin
 	# TODO sudo
 	cat >crictl.yaml-tmp <<EOF
 runtime-endpoint: "unix:///var/run/crio/crio.sock"
@@ -112,6 +129,11 @@ fi
 	gmake bin/crio
 	sudo install bin/crio /usr/local/bin
 	sudo install contrib/freebsd/crio /usr/local/etc/rc.d
+	if [ -n "${PAUSE_IMAGE:-}" ]; then
+		# CRI-O's FreeBSD default pause image (quay.io/dougrabson/pause) is amd64-only
+		sudo mkdir -p /usr/local/etc/crio/crio.conf.d
+		printf '[crio.image]\npause_image = "%s"\n' "${PAUSE_IMAGE}" | sudo tee /usr/local/etc/crio/crio.conf.d/10-pause.conf > /dev/null
+	fi
 	sudo sysrc crio_enable=YES
 )
 
@@ -150,9 +172,9 @@ apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 etcd:
   local:
-    imageRepository: ghcr.io/dfr
-    imageTag: 3.6.5-0
-imageRepository: ghcr.io/dfr
+    imageRepository: ${IMAGE_REPO}
+    imageTag: ${ETCD_TAG}
+imageRepository: ${IMAGE_REPO}
 kubernetesVersion: v1.36.1
 networking:
   serviceSubnet: 10.96.0.0/12
