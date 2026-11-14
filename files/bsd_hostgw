@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# PROVIDE: bsd_hostgw
+# REQUIRE: NETWORKING kubelet
+# KEYWORD: shutdown
+#
+# bsd_hostgw_enable (bool): route other nodes' pod CIDRs via their node IPs (host-gw)
+
+. /etc/rc.subr
+
+name="bsd_hostgw"
+rcvar=bsd_hostgw_enable
+load_rc_config "$name"
+
+: ${bsd_hostgw_enable:="NO"}
+: ${bsd_hostgw_log:="/var/log/bsd-hostgw.log"}
+
+command="/usr/sbin/daemon"
+pidfile="/var/run/${name}_daemon.pid"
+procname="/usr/sbin/daemon"
+command_args="-o ${bsd_hostgw_log} -f -r -P ${pidfile} -p /var/run/${name}.pid /usr/local/libexec/bsd-hostgw"
+
+run_rc_command "$1"

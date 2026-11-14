@@ -1,0 +1,22 @@
+#!/bin/sh
+# bsd-hostgw: minimal "host-gw" pod networking for multi-node FreeBSD clusters.
+# Every node routes each other node's pod CIDR (node.spec.podCIDR) via that node's
+# InternalIP, like flannel's host-gw backend. Requires the nodes to share an L2 network.
+# Runs as a loop (see files/bsd_hostgw rc script); uses the kubelet's own credentials.
+KUBECONFIG=${KUBECONFIG:-/usr/local/etc/kubernetes/kubelet.conf}
+INTERVAL=${INTERVAL:-30}
+self=$(hostname)
+while :; do
+	kubectl --kubeconfig "$KUBECONFIG" get nodes -o \
+	    jsonpath='{range .items[*]}{.metadata.name} {.spec.podCIDR} {.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
+	    2>/dev/null |
+	while read -r name cidr ip; do
+		[ "$name" = "$self" ] || [ -z "$cidr" ] || [ -z "$ip" ] && continue
+		cur=$(route -n get -net "$cidr" 2>/dev/null | awk '/gateway:/ {print $2}')
+		if [ "$cur" != "$ip" ]; then
+			route -q -n delete -net "$cidr" >/dev/null 2>&1
+			route -q -n add -net "$cidr" "$ip" && echo "$(date) route $cidr -> $ip ($name)"
+		fi
+	done
+	sleep "$INTERVAL"
+done

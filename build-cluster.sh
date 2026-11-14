@@ -24,7 +24,9 @@ if [ "${ARCH}" = amd64 ]; then
 else
 	IMAGE_REPO=${IMAGE_REPO:-ghcr.io/platformnerds}
 	PAUSE_IMAGE=${PAUSE_IMAGE:-${IMAGE_REPO}/pause:3.10.2}
-	if ! sudo podman image exists ${IMAGE_REPO}/kube-apiserver:v1.36.1 2>/dev/null; then
+	check_img=${IMAGE_REPO}/kube-apiserver:v1.36.1
+	[ -n "${JOIN_ENDPOINT:-}" ] && check_img=${PAUSE_IMAGE}
+	if ! sudo podman image exists ${check_img} 2>/dev/null; then
 		echo "No ${ARCH} control-plane images found under ${IMAGE_REPO}; build them with"
 		echo "  sudo BSDKubernetes/scripts/build-images-freebsd.sh <bindir> ${IMAGE_REPO}"
 		exit 1
@@ -193,7 +195,14 @@ echo "Building kubeadm, a tool for creating and managing clusters"
 )
 
 # Build a single node cluster using kubeadm
-echo "Building a single node cluster"
+# Multi-node: NODE_IP is this node's address on the cluster network (e.g. 192.168.100.1).
+# Control plane: plain ./build-cluster.sh <if>   Worker: also set JOIN_ENDPOINT (host:6443),
+# JOIN_TOKEN and JOIN_CA_HASH (from `kubeadm token create --print-join-command`).
+if [ -n "${JOIN_ENDPOINT:-}" ]; then
+	echo "Joining the cluster at ${JOIN_ENDPOINT}"
+else
+	echo "Building the control plane node"
+fi
 cat >kubeadm-config.yaml <<EOF
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
@@ -218,6 +227,19 @@ kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 serverTLSBootstrap: true
 EOF
+if [ -n "${NODE_IP:-}" ]; then
+	cat >>kubeadm-config.yaml <<EOF
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: ${NODE_IP}
+nodeRegistration:
+  kubeletExtraArgs:
+  - name: node-ip
+    value: ${NODE_IP}
+EOF
+fi
 
 sudo service crio start
 while [ ! -S /var/run/crio/crio.sock ]; do
@@ -225,6 +247,50 @@ while [ ! -S /var/run/crio/crio.sock ]; do
 	sleep 1
 done
 echo "crio is running"
+
+# Per-node CNI config: host-local IPAM over this node's podCIDR (allocated by the
+# controller-manager from podSubnet), so pod IPs don't collide across nodes. Assumes /24s.
+write_cni_config() {
+	kc=/usr/local/etc/kubernetes/kubelet.conf
+	until cidr=$(sudo kubectl --kubeconfig $kc get node "$(hostname)" -o jsonpath='{.spec.podCIDR}' 2>/dev/null) && [ -n "$cidr" ]; do
+		echo "Waiting for this node's podCIDR"; sleep 2
+	done
+	p=${cidr%.*/*}
+	sed -e "s|10.244.0.0/16|${cidr}|" -e "s|10.244.0.2\"|${p}.2\"|" \
+	    -e "s|10.244.0.254|${p}.254|" -e "s|10.244.0.1\"|${p}.1\"|" files/10-kubetest.conflist |
+	    sudo tee /usr/local/etc/cni/net.d/10-kubetest.conflist > /dev/null
+	echo "CNI: pod subnet ${cidr}"
+}
+
+# host-gw routes to the other nodes' pod CIDRs (no-op on a single node)
+install_hostgw() {
+	sudo install -m 755 files/bsd-hostgw /usr/local/libexec/bsd-hostgw
+	sudo install -m 755 files/bsd_hostgw /usr/local/etc/rc.d/bsd_hostgw
+	sudo sysrc bsd_hostgw_enable=YES
+	sudo service bsd_hostgw restart
+}
+
+if [ -n "${JOIN_ENDPOINT:-}" ]; then
+	cat >kubeadm-join.yaml <<EOF
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: ${JOIN_ENDPOINT}
+    token: ${JOIN_TOKEN}
+    caCertHashes: ["${JOIN_CA_HASH}"]
+nodeRegistration:
+  kubeletExtraArgs:
+  - name: node-ip
+    value: ${NODE_IP:?NODE_IP is required to join}
+EOF
+	sudo kubeadm join --config ./kubeadm-join.yaml || exit 1
+	write_cni_config
+	install_hostgw
+	echo "Joined. On the control plane, approve this node's kubelet serving CSR:"
+	echo "  kubectl get csr | awk '/Pending/ {print \$1}' | xargs kubectl certificate approve"
+	exit 0
+fi
 
 sudo kubeadm init --config ./kubeadm-config.yaml || exit 1
 mkdir -p $HOME/.kube
@@ -240,8 +306,9 @@ kubectl get csr --no-headers | cut -w -f1 | xargs kubectl certificate approve
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 
 # Install a simple network configuration to allow allocating IP addresses for
-# pods
-sudo install -m 644 files/10-kubetest.conflist /usr/local/etc/cni/net.d
+# pods (per-node subnet) and the host-gw route daemon
+write_cni_config
+install_hostgw
 
 # kube-proxy (pf mode): a hostNetwork pod's jail has no PRIV_NETINET_PF (FreeBSD grants it only
 # to VNET jails) unless the kernel has the proposed allow.pf jail parameter
