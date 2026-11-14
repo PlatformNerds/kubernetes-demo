@@ -8,6 +8,13 @@ if [ $# != 1 ]; then
 fi
 netif=$1; shift
 
+# BSDKubernetes: build from PlatformNerds forks by default. The forks are private, so
+# either configure git credentials (e.g. `gh auth setup-git`) or point at dfr's public repos:
+#   BSDK8S_GIT_BASE=https://github.com/dfr CRIO_BRANCH=freebsd-wip-1.37.0 K8S_BRANCH=freebsd-kubelet-v1.36.1 ./build-cluster.sh vtnet0
+BSDK8S_GIT_BASE=${BSDK8S_GIT_BASE:-https://github.com/PlatformNerds}
+CRIO_BRANCH=${CRIO_BRANCH:-bsdk8s-1.37}
+K8S_BRANCH=${K8S_BRANCH:-bsdk8s-v1.36.1}
+
 if [ "$(sysctl -n kern.racct.enable)" -eq 0 ]; then
 	echo 'RACCT is disabled; to enable, add kern.racct.enable="1" to /boot/loader.conf and reboot'
 	exit 1
@@ -94,7 +101,7 @@ EOF
 # Build and install CRI-O
 echo "Building CRI-O"
 if [ ! -d cri-o ]; then
-	git clone -b freebsd-wip-1.37.0 https://github.com/dfr/cri-o.git
+	git clone -b ${CRIO_BRANCH} ${BSDK8S_GIT_BASE}/cri-o.git
 fi
 (
 	if [ -f /usr/local/etc/rc.d/crio ]; then
@@ -111,7 +118,7 @@ fi
 # Build and install kubelet
 echo "Building kubelet, the node agent running on each node in the cluster"
 if [ ! -d kubernetes ]; then
-	git clone https://github.com/kubernetes/kubernetes.git
+	git clone -b ${K8S_BRANCH} ${BSDK8S_GIT_BASE}/kubernetes.git
 fi
 (
 	if [ -f /usr/local/etc/rc.d/kubelet ]; then
@@ -119,9 +126,8 @@ fi
 	fi
 	sudo install -m 755 files/kubelet /usr/local/etc/rc.d
 	cd kubernetes
-	git remote add dfr https://github.com/dfr/kubernetes.git
-	git fetch dfr
-	git checkout freebsd-kubelet-v1.36.1
+	git fetch origin ${K8S_BRANCH}
+	git checkout ${K8S_BRANCH}
 	gmake WHAT=cmd/kubelet
 	sudo install _output/local/go/bin/kubelet /usr/local/bin
 	sudo sysrc kubelet_enable=YES
@@ -131,7 +137,8 @@ fi
 echo "Building kubeadm, a tool for creating and managing clusters"
 (
 	cd kubernetes
-	git checkout freebsd-kubeadm-v1.36.1
+	# bsdk8s branch carries kubelet + kube-proxy + kubeadm patches together
+	git checkout ${K8S_BRANCH}
 	gmake WHAT=cmd/kubeadm
 	sudo install _output/local/go/bin/kubeadm /usr/local/bin
 )
