@@ -8,8 +8,8 @@ if [ $# != 1 ]; then
 fi
 netif=$1; shift
 
-# BSDKubernetes: build from PlatformNerds forks by default. The forks are private, so
-# either configure git credentials (e.g. `gh auth setup-git`) or point at dfr's public repos:
+# BSDKubernetes: build from the (public) PlatformNerds forks by default. To build dfr's
+# upstream branches instead:
 #   BSDK8S_GIT_BASE=https://github.com/dfr CRIO_BRANCH=freebsd-wip-1.37.0 K8S_BRANCH=freebsd-kubelet-v1.36.1 ./build-cluster.sh vtnet0
 BSDK8S_GIT_BASE=${BSDK8S_GIT_BASE:-https://github.com/PlatformNerds}
 CRIO_BRANCH=${CRIO_BRANCH:-bsdk8s-1.37}
