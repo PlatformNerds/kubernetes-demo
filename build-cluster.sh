@@ -243,9 +243,15 @@ kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 # pods
 sudo install -m 644 files/10-kubetest.conflist /usr/local/etc/cni/net.d
 
-# kube-proxy (pf mode) as a host service instead of the kubeadm DaemonSet: a hostNetwork
-# jail has no PRIV_NETINET_PF (FreeBSD grants it only to VNET jails), so pfctl gets EPERM.
-echo "Running kube-proxy on the host"
+# kube-proxy (pf mode): a hostNetwork pod's jail has no PRIV_NETINET_PF (FreeBSD grants it only
+# to VNET jails) unless the kernel has the proposed allow.pf jail parameter
+# (PlatformNerds/freebsd-src bsdk8s/allow-pf), which CRI-O then sets for privileged
+# host-network pods. With it, the normal kubeadm DaemonSet works. Without it, run
+# kube-proxy as a host rc service instead.
+if sysctl -q security.jail.param.allow.pf >/dev/null 2>&1; then
+	echo "Kernel supports allow.pf: kube-proxy runs as the kubeadm DaemonSet"
+else
+echo "Kernel lacks allow.pf: running kube-proxy on the host"
 kubectl -n kube-system patch ds kube-proxy \
 	-p '{"spec":{"template":{"spec":{"nodeSelector":{"bsdk8s.io/kube-proxy-in-pod":"true"}}}}}'
 sudo mkdir -p /usr/local/etc/kube-proxy
@@ -264,6 +270,7 @@ sudo chmod 600 ${kp_kc}
 sudo install -m 755 files/kube-proxy /usr/local/etc/rc.d/kube_proxy
 sudo sysrc kube_proxy_enable=YES
 sudo service kube_proxy restart
+fi
 
 # kubeadm's kubelet-finalize restarts the kubelet, which files new serving CSRs
 # (serverTLSBootstrap); approve them or kubectl exec/logs fail with a TLS error.
