@@ -203,6 +203,13 @@ etcd:
     imageTag: ${ETCD_TAG}
 imageRepository: ${IMAGE_REPO}
 kubernetesVersion: v1.36.1
+apiServer:
+  extraArgs:
+  # kube-apiserver runs in a host-network jail and pf (15.x) does not redirect
+  # host-originated traffic to ClusterIPs, so webhook/aggregated-API calls to a
+  # Service ClusterIP time out. Resolve those Services to pod endpoints instead.
+  - name: enable-aggregator-routing
+    value: "true"
 networking:
   serviceSubnet: 10.96.0.0/12
   podSubnet: 10.244.0.0/16
