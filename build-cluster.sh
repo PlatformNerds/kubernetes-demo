@@ -48,6 +48,30 @@ sudo kldload if_bridge
 sudo kldload pf
 sudo sysrc kld_list="nullfs fdescfs if_bridge pf"
 
+# BSDKubernetes: replace the packaged ocijail with our fork, which enforces
+# container resource limits (OCI linux.resources -> rctl rules). Built with the
+# CLI11 version ocijail pins (distfiles/v2.3.2.zip); newer CLI11 breaks --version.
+# Set OCIJAIL_BRANCH="" to keep the packaged ocijail.
+OCIJAIL_BRANCH=${OCIJAIL_BRANCH-bsdk8s-main}
+if [ -n "${OCIJAIL_BRANCH}" ]; then
+	echo "Building ocijail from ${BSDK8S_GIT_BASE}/ocijail.git (${OCIJAIL_BRANCH})"
+	sudo pkg install -y nlohmann-json
+	if [ ! -d ocijail ]; then
+		git clone -b ${OCIJAIL_BRANCH} ${BSDK8S_GIT_BASE}/ocijail.git
+	fi
+	(
+		cd ocijail
+		git pull
+		rm -rf _cli11 && mkdir _cli11 && tar -xf distfiles/v2.3.2.zip -C _cli11
+		cd ocijail
+		c++ -std=c++20 -O2 -Wno-deprecated-declarations -I.. \
+			-I../_cli11/CLI11-2.3.2/include -I/usr/local/include \
+			-o ../ocijail.bin $(ls *.cpp | grep -v _test) -lm
+		sudo install -m 755 ../ocijail.bin /usr/local/bin/ocijail
+		sudo pkg lock -y ocijail
+	)
+fi
+
 ocijail_version=$(ocijail --version | cut -w -f3)
 ocijail_major=$(echo ${ocijail_version} | cut -d'.' -f1)
 ocijail_minor=$(echo ${ocijail_version} | cut -d'.' -f2)
