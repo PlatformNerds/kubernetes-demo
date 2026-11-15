@@ -65,7 +65,9 @@ kubelet_start()
 	startmsg "Waiting for CRI-O"
 	sleep 1
     done
-    /usr/sbin/daemon -o ${kubelet_log} -f -P ${pidfile} -p ${child_pidfile} -H ${command} ${kubelet_options}
+    # -r: restart the kubelet if it exits, e.g. when CRI-O's socket exists but
+    # CRI-O is still restoring containers after a crash and doesn't answer yet.
+    /usr/sbin/daemon -o ${kubelet_log} -f -r -R 5 -P ${pidfile} -p ${child_pidfile} -H ${command} ${kubelet_options}
 }
 
 run_rc_command "$1"

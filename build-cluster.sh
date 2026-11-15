@@ -93,6 +93,9 @@ ensure_sysctl() {
 ensure_sysctl 'net.pf.filter_local=1'
 ensure_sysctl 'net.inet.ip.forwarding=1'
 ensure_sysctl 'net.link.bridge.pfil_member=1'
+# Cap the ZFS ARC at a quarter of RAM so pods, not the file cache, get the
+# memory (the kubelet counts the ARC above its minimum as reclaimable).
+ensure_sysctl "vfs.zfs.arc_max=$(( $(sysctl -n hw.physmem) / 4 ))"
 sudo service sysctl start
 
 # Set up a simple PF config which is needed for container networking
@@ -251,6 +254,14 @@ networking:
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 serverTLSBootstrap: true
+# Headroom so memory eviction acts before the host runs out (a FreeBSD node with
+# no swap to speak of livelocks instead of failing allocations).
+systemReserved:
+  memory: 1Gi
+evictionHard:
+  memory.available: 500Mi
+  nodefs.available: "10%"
+  imagefs.available: "15%"
 EOF
 if [ -n "${NODE_IP:-}" ]; then
 	cat >>kubeadm-config.yaml <<EOF
