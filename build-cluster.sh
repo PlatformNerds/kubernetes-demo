@@ -106,11 +106,18 @@ nat on \$v6egress_if inet6 from <cni-nat> to !ff00::/8 -> (\$v6egress_if)
 
 rdr-anchor "cni-rdr/*"
 nat-anchor "cni-rdr/*"
+anchor "cni-rdr/*"
 table <cni-nat>
 EOF
 	sudo mv pf.conf-tmp /etc/pf.conf
 	sudo sysrc pf_enable=YES
 	sudo service pf restart
+fi
+# kube-proxy also puts filter rules in its anchors: "pass out ... rdr-to" for
+# traffic the node itself sends to ClusterIPs (rdr only sees inbound packets).
+if ! grep -q '^anchor "cni-rdr/\*"' /etc/pf.conf; then
+	echo 'anchor "cni-rdr/*"' | sudo tee -a /etc/pf.conf > /dev/null
+	sudo service pf reload
 fi
 
 # Setup container storage
@@ -195,6 +202,24 @@ echo "Building kubeadm, a tool for creating and managing clusters"
 )
 
 # Build a single node cluster using kubeadm
+SERVICE_SUBNET=${SERVICE_SUBNET:-10.96.0.0/12}
+
+# Traffic the node sends to a ClusterIP is redirected by pf on output, keeping
+# its source address, so that must be an address the endpoint can reply to:
+# on a multi-homed node, route the Service CIDR via the NODE_IP interface
+# (otherwise it follows the default route, e.g. a NAT interface).
+route_service_subnet() {
+	[ -n "${NODE_IP:-}" ] || return 0
+	svcif=$(ifconfig | awk -v ip="${NODE_IP}" '/^[a-z]/ {i=$1; sub(":$", "", i)} $1 == "inet" && $2 == ip {print i}')
+	[ -n "$svcif" ] || { echo "NODE_IP ${NODE_IP} not found on any interface"; return 1; }
+	sudo sysrc static_routes+=" k8ssvc" > /dev/null
+	sudo sysrc route_k8ssvc="-net ${SERVICE_SUBNET} -interface ${svcif}" > /dev/null
+	sudo route -q delete -net "${SERVICE_SUBNET}" 2>/dev/null || true
+	sudo route -q add -net "${SERVICE_SUBNET}" -interface "${svcif}"
+	echo "Service CIDR ${SERVICE_SUBNET} routed via ${svcif}"
+}
+route_service_subnet
+
 # Multi-node: NODE_IP is this node's address on the cluster network (e.g. 192.168.100.1).
 # Control plane: plain ./build-cluster.sh <if>   Worker: also set JOIN_ENDPOINT (host:6443),
 # JOIN_TOKEN and JOIN_CA_HASH (from `kubeadm token create --print-join-command`).
@@ -220,7 +245,7 @@ apiServer:
   - name: enable-aggregator-routing
     value: "true"
 networking:
-  serviceSubnet: 10.96.0.0/12
+  serviceSubnet: ${SERVICE_SUBNET}
   podSubnet: 10.244.0.0/16
 ---
 kind: KubeletConfiguration
