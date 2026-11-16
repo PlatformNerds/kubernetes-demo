@@ -136,6 +136,12 @@ if [ "${LINUX_IMAGES:-yes}" = yes ]; then
 	    sudo tee /usr/local/etc/crio/crio.conf.d/20-linux.conf > /dev/null
 fi
 
+# Resolve short image names ("nginx", "bitnami/redis") via docker.io, as
+# containerd and Docker do; upstream manifests and charts rely on it.
+sudo mkdir -p /usr/local/etc/containers/registries.conf.d
+printf 'unqualified-search-registries = ["docker.io"]\nshort-name-mode = "permissive"\n' |
+    sudo tee /usr/local/etc/containers/registries.conf.d/10-docker-io.conf > /dev/null
+
 # Setup container storage
 if [ ! -d /var/db/containers ]; then
 	sudo zfs create -o mountpoint=/var/db/containers zroot/containers
@@ -448,6 +454,9 @@ scheduling:
   nodeSelector: {bsdk8s.io/linux-abi: "true"}
 EOF
 [ "${LINUX_IMAGES:-yes}" = yes ] && kubectl label node "$(hostname)" bsdk8s.io/linux-abi=true --overwrite > /dev/null
+# Upstream manifests pin pods to kubernetes.io/os=linux; to run them here
+# unmodified, install the bsd-placement webhook (BSDKubernetes repo,
+# components/bsd-placement: ./build.sh && deploy/install.sh).
 
 echo "To add worker nodes, run on each (NODE_IP = the worker's cluster address):"
 echo "  NODE_IP=<ip> JOIN_ENDPOINT=... JOIN_TOKEN=... JOIN_CA_HASH=... HOSTGW_TOKEN=<token> ./build-cluster.sh <if>"
