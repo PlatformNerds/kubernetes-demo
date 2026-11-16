@@ -105,6 +105,9 @@ v4egress_if = "${netif}"
 v6egress_if = "${netif}"
 
 nat on \$v4egress_if inet from <cni-nat> to any -> (\$v4egress_if)
+# Pod egress: NAT traffic from the pod CIDR to anything outside it, so pods
+# reach external hosts (and DNS) while pod-to-pod traffic keeps pod IPs.
+nat on \$v4egress_if inet from 10.244.0.0/16 to ! 10.244.0.0/16 -> (\$v4egress_if)
 nat on \$v6egress_if inet6 from <cni-nat> to !ff00::/8 -> (\$v6egress_if)
 
 rdr-anchor "cni-rdr/*"
@@ -122,6 +125,23 @@ if ! grep -q '^anchor "cni-rdr/\*"' /etc/pf.conf; then
 	echo 'anchor "cni-rdr/*"' | sudo tee -a /etc/pf.conf > /dev/null
 	sudo service pf reload
 fi
+# Older configs had no pod egress NAT (ipMasq is off in the CNI config, so
+# <cni-nat> stays empty): pods could not reach anything outside the cluster,
+# e.g. CoreDNS could not forward. Translation rules must precede filter
+# rules, so insert it after the existing nat rule.
+if ! grep -q 'from 10.244.0.0/16 to ! 10.244.0.0/16' /etc/pf.conf; then
+	sudo sed -i '' '/^nat on \$v4egress_if inet from <cni-nat>/a\
+nat on $v4egress_if inet from 10.244.0.0/16 to ! 10.244.0.0/16 -> ($v4egress_if)
+' /etc/pf.conf
+	sudo pfctl -nf /etc/pf.conf && sudo service pf reload
+fi
+
+# Pods get the node's resolv.conf (CoreDNS forwards to it). Keep only IPv4
+# nameservers: an IPv6 one the pod network cannot reach (e.g. QEMU's fec0::3)
+# makes a share of CoreDNS forwards time out.
+sudo mkdir -p /usr/local/etc/kubernetes
+awk '$1 != "nameserver" || $2 !~ /:/' /etc/resolv.conf | sudo tee /usr/local/etc/kubernetes/resolv.conf > /dev/null
+grep -q '^nameserver' /usr/local/etc/kubernetes/resolv.conf || sudo cp /etc/resolv.conf /usr/local/etc/kubernetes/resolv.conf
 
 # Linux images (RuntimeClass "linux"): run under the Linux ABI in jails.
 # kern.elf64.fallback_brand=3 makes unbranded ELF binaries (musl, e.g.
@@ -273,6 +293,7 @@ networking:
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 serverTLSBootstrap: true
+resolvConf: /usr/local/etc/kubernetes/resolv.conf
 # Headroom so memory eviction acts before the host runs out (a FreeBSD node with
 # no swap to speak of livelocks instead of failing allocations).
 systemReserved:
