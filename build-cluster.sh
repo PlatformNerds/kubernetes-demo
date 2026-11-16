@@ -123,6 +123,19 @@ if ! grep -q '^anchor "cni-rdr/\*"' /etc/pf.conf; then
 	sudo service pf reload
 fi
 
+# Linux images (RuntimeClass "linux"): run under the Linux ABI in jails.
+# kern.elf64.fallback_brand=3 makes unbranded ELF binaries (musl, e.g.
+# Alpine) Linux; FreeBSD binaries always carry a FreeBSD brand.
+if [ "${LINUX_IMAGES:-yes}" = yes ]; then
+	sudo sysrc kld_list+=" linux64 linprocfs linsysfs fdescfs" > /dev/null
+	sudo kldload -n linux64 linprocfs linsysfs fdescfs
+	ensure_sysctl 'kern.elf64.fallback_brand=3'
+	sudo sysctl kern.elf64.fallback_brand=3 > /dev/null
+	sudo mkdir -p /usr/local/etc/crio/crio.conf.d
+	printf '[crio.runtime.runtimes.linux]\ninherit_default_runtime = true\ndefault_annotations = { "io.bsdk8s.image-os" = "linux" }\n' |
+	    sudo tee /usr/local/etc/crio/crio.conf.d/20-linux.conf > /dev/null
+fi
+
 # Setup container storage
 if [ ! -d /var/db/containers ]; then
 	sudo zfs create -o mountpoint=/var/db/containers zroot/containers
@@ -424,6 +437,17 @@ fi
 # (serverTLSBootstrap); approve them or kubectl exec/logs fail with a TLS error.
 sleep 5
 kubectl get csr --no-headers | awk '$NF ~ /Pending/ {print $1}' | xargs -r kubectl certificate approve
+
+# RuntimeClass for Linux images; nodes opt in with the label (set below).
+kubectl apply -f - <<EOF
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata: {name: linux}
+handler: linux
+scheduling:
+  nodeSelector: {bsdk8s.io/linux-abi: "true"}
+EOF
+[ "${LINUX_IMAGES:-yes}" = yes ] && kubectl label node "$(hostname)" bsdk8s.io/linux-abi=true --overwrite > /dev/null
 
 echo "To add worker nodes, run on each (NODE_IP = the worker's cluster address):"
 echo "  NODE_IP=<ip> JOIN_ENDPOINT=... JOIN_TOKEN=... JOIN_CA_HASH=... HOSTGW_TOKEN=<token> ./build-cluster.sh <if>"
