@@ -156,6 +156,13 @@ if [ "${LINUX_IMAGES:-yes}" = yes ]; then
 	    sudo tee /usr/local/etc/crio/crio.conf.d/20-linux.conf > /dev/null
 fi
 
+# Like containerd 2.x (enable_unprivileged_ports): non-root processes may bind
+# ports below 1024 inside their own pod (e.g. ingress-nginx as uid 101).
+# ocijail maps it to the pod vnet's net.inet.ip.portrange.reservedhigh; the
+# host keeps its reserved ports. Pods can override it via securityContext.
+printf '[crio.runtime]\ndefault_sysctls = [ "net.ipv4.ip_unprivileged_port_start=0" ]\n' |
+    sudo tee /usr/local/etc/crio/crio.conf.d/30-unprivileged-ports.conf > /dev/null
+
 # Resolve short image names ("nginx", "bitnami/redis") via docker.io, as
 # containerd and Docker do; upstream manifests and charts rely on it.
 sudo mkdir -p /usr/local/etc/containers/registries.conf.d
