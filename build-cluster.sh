@@ -473,10 +473,14 @@ sleep 5
 kubectl get csr --no-headers | awk '$NF ~ /Pending/ {print $1}' | xargs -r kubectl certificate approve
 
 # RuntimeClass for Linux images; nodes opt in with the label (set below).
+# bsdk8s.io/pod-os lets the kubelet admit pods with spec.os.name=linux when
+# they use this RuntimeClass.
 kubectl apply -f - <<EOF
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
-metadata: {name: linux}
+metadata:
+  name: linux
+  annotations: {bsdk8s.io/pod-os: linux}
 handler: linux
 scheduling:
   nodeSelector: {bsdk8s.io/linux-abi: "true"}
