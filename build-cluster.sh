@@ -309,6 +309,14 @@ evictionHard:
   memory.available: 500Mi
   nodefs.available: "10%"
   imagefs.available: "15%"
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+# Only this node's pods count as "local" for externalTrafficPolicy: Local. The
+# bsd-hostgw CNI doesn't masquerade pod-to-node traffic, so with the default
+# (the whole cluster CIDR) a pod calling another node's NodePort would be
+# short-circuited instead of treated as external, as on Linux.
+detectLocalMode: NodeCIDR
 EOF
 if [ -n "${NODE_IP:-}" ]; then
 	cat >>kubeadm-config.yaml <<EOF
