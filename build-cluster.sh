@@ -112,6 +112,7 @@ nat on \$v6egress_if inet6 from <cni-nat> to !ff00::/8 -> (\$v6egress_if)
 
 rdr-anchor "cni-rdr/*"
 nat-anchor "cni-rdr/*"
+anchor "kube-np/*"
 anchor "cni-rdr/*"
 table <cni-nat>
 EOF
@@ -123,6 +124,14 @@ fi
 # traffic the node itself sends to ClusterIPs (rdr only sees inbound packets).
 if ! grep -q '^anchor "cni-rdr/\*"' /etc/pf.conf; then
 	echo 'anchor "cni-rdr/*"' | sudo tee -a /etc/pf.conf > /dev/null
+	sudo service pf reload
+fi
+# NetworkPolicy (BSDKubernetes components/bsd-netpol) loads its rules into kube-np/policy.
+# Evaluate them before kube-proxy's filter rules, whose "pass in quick ... rdr-to" (split
+# port groups) would otherwise skip egress policy.
+if ! grep -q '^anchor "kube-np/\*"' /etc/pf.conf; then
+	sudo sed -i '' 's|^anchor "cni-rdr/\*"$|anchor "kube-np/*"\
+anchor "cni-rdr/*"|' /etc/pf.conf
 	sudo service pf reload
 fi
 # Older configs had no pod egress NAT (ipMasq is off in the CNI config, so
