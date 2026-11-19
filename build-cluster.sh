@@ -194,19 +194,24 @@ fi
 printf '[crio.runtime]\ndefault_sysctls = [ "net.ipv4.ip_unprivileged_port_start=0" ]\n' |
     sudo tee /usr/local/etc/crio/crio.conf.d/30-unprivileged-ports.conf > /dev/null
 
-# For the Kubernetes e2e suite only: the RuntimeClass tests expect a runtime
-# handler named "test-handler" on every node (upstream CI configures one the
-# same way). It is the default runtime under another name.
-if [ "${E2E_TEST_HANDLER:-no}" = yes ]; then
-	printf '[crio.runtime.runtimes.test-handler]\ninherit_default_runtime = true\n' |
-	    sudo tee /usr/local/etc/crio/crio.conf.d/40-e2e-test-handler.conf > /dev/null
-fi
-
 # Resolve short image names ("nginx", "bitnami/redis") via docker.io, as
 # containerd and Docker do; upstream manifests and charts rely on it.
 sudo mkdir -p /usr/local/etc/containers/registries.conf.d
 printf 'unqualified-search-registries = ["docker.io"]\nshort-name-mode = "permissive"\n' |
     sudo tee /usr/local/etc/containers/registries.conf.d/10-docker-io.conf > /dev/null
+
+# For the Kubernetes e2e suite only, as upstream CI configures its nodes:
+# - the RuntimeClass tests expect a runtime handler named "test-handler" (the
+#   default runtime under another name);
+# - the private-registry tests run an HTTP registry on the node's
+#   localhost:5000, which CRI-O (unlike containerd) only pulls from when it is
+#   marked insecure.
+if [ "${E2E_NODE_CONFIG:-no}" = yes ]; then
+	printf '[crio.runtime.runtimes.test-handler]\ninherit_default_runtime = true\n' |
+	    sudo tee /usr/local/etc/crio/crio.conf.d/40-e2e-test-handler.conf > /dev/null
+	printf '[[registry]]\nlocation = "localhost:5000"\ninsecure = true\n' |
+	    sudo tee /usr/local/etc/containers/registries.conf.d/30-e2e-localhost.conf > /dev/null
+fi
 
 # Setup container storage
 if [ ! -d /var/db/containers ]; then
