@@ -50,7 +50,10 @@ sudo kldload if_bridge
 sudo kldload pf
 # SCTP sockets for pods (Services and NetworkPolicies of protocol SCTP).
 sudo kldload -n sctp
-sudo sysrc kld_list="nullfs fdescfs if_bridge pf sctp"
+# The NFS server for privileged pods that serve NFS (nfsd runs in the pod's jail;
+# the module must be loaded outside the jails).
+sudo kldload -n nfsd
+sudo sysrc kld_list="nullfs fdescfs if_bridge pf sctp nfsd"
 
 # BSDKubernetes: replace the packaged ocijail with our fork, which enforces
 # container resource limits (OCI linux.resources -> rctl rules). Built with the
@@ -106,6 +109,11 @@ fi
 # Needs PlatformNerds/freebsd-src bsdk8s/jail-vnet-socket-visibility.
 if sysctl -q security.bsd.see_vnet_sockets >/dev/null 2>&1; then
 	ensure_sysctl 'security.bsd.see_vnet_sockets=1'
+fi
+# A privileged container may run an NFS server (allow.nfsd, granted by CRI-O) in the network
+# stack it shares with its pod. Needs PlatformNerds/freebsd-src bsdk8s/jail-nfsd-inherited-vnet.
+if sysctl -q security.jail.nfsd_inherited_vnet >/dev/null 2>&1; then
+	ensure_sysctl 'security.jail.nfsd_inherited_vnet=1'
 fi
 # Cap the ZFS ARC at a quarter of RAM so pods, not the file cache, get the
 # memory (the kubelet counts the ARC above its minimum as reclaimable).
