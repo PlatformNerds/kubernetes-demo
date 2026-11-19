@@ -101,6 +101,12 @@ ensure_sysctl 'net.link.bridge.pfil_member=1'
 if sysctl -q net.pf.sctp_rdr_ports >/dev/null 2>&1; then
 	ensure_sysctl 'net.pf.sctp_rdr_ports=1'
 fi
+# A pod's containers are sibling jails sharing the pod jail's vnet: let them see each other's
+# sockets (netstat/sockstat, e.g. readiness probes), as in one Linux network namespace.
+# Needs PlatformNerds/freebsd-src bsdk8s/jail-vnet-socket-visibility.
+if sysctl -q security.bsd.see_vnet_sockets >/dev/null 2>&1; then
+	ensure_sysctl 'security.bsd.see_vnet_sockets=1'
+fi
 # Cap the ZFS ARC at a quarter of RAM so pods, not the file cache, get the
 # memory (the kubelet counts the ARC above its minimum as reclaimable).
 ensure_sysctl "vfs.zfs.arc_max=$(( $(sysctl -n hw.physmem) / 4 ))"
