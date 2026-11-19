@@ -48,7 +48,9 @@ sudo kldload nullfs
 sudo kldload fdescfs
 sudo kldload if_bridge
 sudo kldload pf
-sudo sysrc kld_list="nullfs fdescfs if_bridge pf"
+# SCTP sockets for pods (Services and NetworkPolicies of protocol SCTP).
+sudo kldload -n sctp
+sudo sysrc kld_list="nullfs fdescfs if_bridge pf sctp"
 
 # BSDKubernetes: replace the packaged ocijail with our fork, which enforces
 # container resource limits (OCI linux.resources -> rctl rules). Built with the
@@ -93,6 +95,12 @@ ensure_sysctl() {
 ensure_sysctl 'net.pf.filter_local=1'
 ensure_sysctl 'net.inet.ip.forwarding=1'
 ensure_sysctl 'net.link.bridge.pfil_member=1'
+# SCTP Services: let pf's rdr change SCTP destination ports (Service port ->
+# targetPort, NodePorts). Stock pf never does; the knob comes with
+# PlatformNerds/freebsd-src bsdk8s/pf-sctp-rdr-port.
+if sysctl -q net.pf.sctp_rdr_ports >/dev/null 2>&1; then
+	ensure_sysctl 'net.pf.sctp_rdr_ports=1'
+fi
 # Cap the ZFS ARC at a quarter of RAM so pods, not the file cache, get the
 # memory (the kubelet counts the ARC above its minimum as reclaimable).
 ensure_sysctl "vfs.zfs.arc_max=$(( $(sysctl -n hw.physmem) / 4 ))"
