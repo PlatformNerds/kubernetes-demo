@@ -101,6 +101,9 @@ sudo service sysctl start
 # Set up a simple PF config which is needed for container networking
 if [ ! -f /etc/pf.conf ]; then
 	cat >> pf.conf-tmp <<EOF
+# Reassemble fragments: kube-proxy's rdr needs ports, which only a datagram's first
+# fragment carries, so fragmented UDP to a Service failed without it.
+set reassemble yes
 v4egress_if = "${netif}"
 v6egress_if = "${netif}"
 
@@ -129,6 +132,11 @@ fi
 # NetworkPolicy (BSDKubernetes components/bsd-netpol) loads its rules into kube-np/policy.
 # Evaluate them before kube-proxy's filter rules, whose "pass in quick ... rdr-to" (split
 # port groups) would otherwise skip egress policy.
+if ! grep -q '^set reassemble' /etc/pf.conf; then
+	{ echo 'set reassemble yes'; cat /etc/pf.conf; } > pf.conf-tmp
+	sudo mv pf.conf-tmp /etc/pf.conf
+	sudo service pf reload
+fi
 if ! grep -q '^anchor "kube-np/\*"' /etc/pf.conf; then
 	sudo sed -i '' 's|^anchor "cni-rdr/\*"$|anchor "kube-np/*"\
 anchor "cni-rdr/*"|' /etc/pf.conf
