@@ -194,6 +194,14 @@ fi
 printf '[crio.runtime]\ndefault_sysctls = [ "net.ipv4.ip_unprivileged_port_start=0" ]\n' |
     sudo tee /usr/local/etc/crio/crio.conf.d/30-unprivileged-ports.conf > /dev/null
 
+# For the Kubernetes e2e suite only: the RuntimeClass tests expect a runtime
+# handler named "test-handler" on every node (upstream CI configures one the
+# same way). It is the default runtime under another name.
+if [ "${E2E_TEST_HANDLER:-no}" = yes ]; then
+	printf '[crio.runtime.runtimes.test-handler]\ninherit_default_runtime = true\n' |
+	    sudo tee /usr/local/etc/crio/crio.conf.d/40-e2e-test-handler.conf > /dev/null
+fi
+
 # Resolve short image names ("nginx", "bitnami/redis") via docker.io, as
 # containerd and Docker do; upstream manifests and charts rely on it.
 sudo mkdir -p /usr/local/etc/containers/registries.conf.d
