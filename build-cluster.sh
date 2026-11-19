@@ -329,6 +329,34 @@ if [ -n "${JOIN_ENDPOINT:-}" ]; then
 else
 	echo "Building the control plane node"
 fi
+# Recycler pod template: upstream's default (pkg/volume NewPersistentVolumeRecyclerPodTemplate)
+# with FreeBSD's official runtime image, whose sh, find and ls run the same scrub command.
+RECYCLER_POD=/usr/local/etc/kubernetes/recycler-pod.yaml
+RECYCLER_IMAGE=${RECYCLER_IMAGE:-docker.io/freebsd/freebsd-runtime:$(freebsd-version -u | sed 's/-.*//')}
+sudo mkdir -p /usr/local/etc/kubernetes
+sudo tee "${RECYCLER_POD}" >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: pv-recycler-
+  namespace: default
+spec:
+  activeDeadlineSeconds: 60
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/os: freebsd
+  volumes:
+  - name: vol
+  containers:
+  - name: pv-recycler
+    image: ${RECYCLER_IMAGE}
+    command: ["/bin/sh"]
+    args: ["-c", "test -e /scrub && find /scrub -mindepth 1 -delete && test -z \\"\$(ls -A /scrub)\\" || exit 1"]
+    volumeMounts:
+    - name: vol
+      mountPath: /scrub
+EOF
+
 cat >kubeadm-config.yaml <<EOF
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
@@ -345,6 +373,20 @@ apiServer:
   # Service ClusterIP time out. Resolve those Services to pod endpoints instead.
   - name: enable-aggregator-routing
     value: "true"
+controllerManager:
+  # The PV recycler (persistentVolumeReclaimPolicy: Recycle) runs a pod whose
+  # default image is Linux (debian-base): use a FreeBSD one (written above).
+  extraArgs:
+  - name: pv-recycler-pod-template-filepath-nfs
+    value: ${RECYCLER_POD}
+  - name: pv-recycler-pod-template-filepath-hostpath
+    value: ${RECYCLER_POD}
+  extraVolumes:
+  - name: recycler-pod
+    hostPath: ${RECYCLER_POD}
+    mountPath: ${RECYCLER_POD}
+    readOnly: true
+    pathType: File
 networking:
   serviceSubnet: ${SERVICE_SUBNET}
   podSubnet: 10.244.0.0/16
