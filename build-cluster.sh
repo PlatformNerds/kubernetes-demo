@@ -243,6 +243,9 @@ fi
 # Install build tools needed for building Kubernetes components from source.
 echo "Installing packages needed to build and use cluster components"
 sudo pkg install -y go gmake gsed git-lite bash pkgconf coreutils kubectl
+# The kubelet formats and checks volumes (local disks, block-backed PVs) as on
+# Linux: blkid, mkfs.ext4 and e2fsck come from e2fsprogs.
+sudo pkg install -y e2fsprogs-core
 
 # Build and install crictl
 echo "Building crictl tool for troubleshooting CRI-O problems"
