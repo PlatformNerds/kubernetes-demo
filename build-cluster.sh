@@ -115,6 +115,12 @@ fi
 if sysctl -q security.jail.nfsd_inherited_vnet >/dev/null 2>&1; then
 	ensure_sysctl 'security.jail.nfsd_inherited_vnet=1'
 fi
+# Access times like a Linux node's (relatime): read-mostly pods don't write atimes back, and the
+# container mount table (linprocfs) shows relatime, which storage tests check. Kernels without
+# PlatformNerds/freebsd-src bsdk8s/linprocfs-mounts-lower-15.1 list the property but ignore it.
+if zfs list -H -o name zroot >/dev/null 2>&1; then
+	sudo zfs set relatime=on zroot
+fi
 # Cap the ZFS ARC at a quarter of RAM so pods, not the file cache, get the
 # memory (the kubelet counts the ARC above its minimum as reclaimable).
 ensure_sysctl "vfs.zfs.arc_max=$(( $(sysctl -n hw.physmem) / 4 ))"
