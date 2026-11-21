@@ -208,6 +208,14 @@ fi
 printf '[crio.runtime]\ndefault_sysctls = [ "net.ipv4.ip_unprivileged_port_start=0" ]\n' |
     sudo tee /usr/local/etc/crio/crio.conf.d/30-unprivileged-ports.conf > /dev/null
 
+# Like containerd and Docker: containers have CAP_MKNOD by default (CRI-O's
+# own defaults leave it out). On FreeBSD it only lets a container's jail create
+# device nodes outside devfs (allow.mknod, freebsd-src 0043), and those are
+# inert: devices are reached only through devfs, where a jail can't create
+# nodes. Software that prepares device nodes in a volume expects it.
+printf '[crio.runtime]\ndefault_capabilities = [ "MKNOD" ]\n' |
+    sudo tee /usr/local/etc/crio/crio.conf.d/35-default-capabilities.conf > /dev/null
+
 # Resolve short image names ("nginx", "bitnami/redis") via docker.io, as
 # containerd and Docker do; upstream manifests and charts rely on it.
 sudo mkdir -p /usr/local/etc/containers/registries.conf.d
