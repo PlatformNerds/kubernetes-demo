@@ -390,6 +390,10 @@ apiServer:
   # Service ClusterIP time out. Resolve those Services to pod endpoints instead.
   - name: enable-aggregator-routing
     value: "true"
+  # Serve the DRA beta APIs next to v1 (off by default in 1.36): DRA drivers
+  # and e2e tests that still use v1beta1/v1beta2 clients need them.
+  - name: runtime-config
+    value: resource.k8s.io/v1beta1=true,resource.k8s.io/v1beta2=true
 controllerManager:
   # The PV recycler (persistentVolumeReclaimPolicy: Recycle) runs a pod whose
   # default image is Linux (debian-base): use a FreeBSD one (written above).
