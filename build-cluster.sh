@@ -614,6 +614,10 @@ EOF
 # Upstream manifests pin pods to kubernetes.io/os=linux; to run them here
 # unmodified, install the bsd-placement webhook (BSDKubernetes repo,
 # components/bsd-placement: ./build.sh && deploy/install.sh).
+# LoadBalancer Services: BSDKubernetes components/bsd-lb (research/25): build.sh on a node, then
+#   sed -e "s|\${IMAGE}|localhost/bsd-lb:dev|" -e "s|\${POOL}|<free addresses on the node network>|" \
+#     deploy/bsd-lb.yaml | kubectl apply -f -
+# NetworkPolicy: components/bsd-netpol (research/22), whose anchor is set up above.
 
 echo "To add worker nodes, run on each (NODE_IP = the worker's cluster address):"
 echo "  NODE_IP=<ip> JOIN_ENDPOINT=... JOIN_TOKEN=... JOIN_CA_HASH=... HOSTGW_TOKEN=<token> ./build-cluster.sh <if>"
