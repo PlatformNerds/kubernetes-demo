@@ -45,6 +45,12 @@ those interfaces to the node-level bridge. Each node must use a separate address
 range which does not overlap any other node. This involves manually editing the
 config file on each node. In future, the aim is to automate this process.
 
+`build-cluster.sh` now automates this (BSDKubernetes): set `NODE_IP` to each node's address on
+the cluster network, and the CNI config and cross-node routes (bsd-hostgw) follow the pod
+CIDR the control plane gives the node. For an IPv4/IPv6 dual-stack cluster also set
+`NODE_IP6` (e.g. `fd00:100::1`) on every node; the IPv6 Service and pod ranges default to
+`fd00:10:96::/112` and `fd00:10:244::/56` (`SERVICE_SUBNET6`, `POD_SUBNET6`).
+
 Notes
 =====
 

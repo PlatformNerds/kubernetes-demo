@@ -97,6 +97,11 @@ ensure_sysctl() {
 # Sysctl settings to allow routing and filtering for cluster network traffic
 ensure_sysctl 'net.pf.filter_local=1'
 ensure_sysctl 'net.inet.ip.forwarding=1'
+# Dual-stack (NODE_IP6 set, see below): route IPv6 too.
+if [ -n "${NODE_IP6:-}" ]; then
+	ensure_sysctl 'net.inet6.ip6.forwarding=1'
+	sudo sysrc ipv6_gateway_enable=YES > /dev/null
+fi
 ensure_sysctl 'net.link.bridge.pfil_member=1'
 # SCTP Services: let pf's rdr change SCTP destination ports (Service port ->
 # targetPort, NodePorts). Stock pf never does; the knob comes with
@@ -323,6 +328,10 @@ echo "Building kubeadm, a tool for creating and managing clusters"
 
 # Build a single node cluster using kubeadm
 SERVICE_SUBNET=${SERVICE_SUBNET:-10.96.0.0/12}
+# Dual-stack: set NODE_IP6 (this node's IPv6 address on the cluster network, e.g.
+# fd00:100::1) on every node. These are the IPv6 Service and pod ranges then.
+SERVICE_SUBNET6=${SERVICE_SUBNET6:-fd00:10:96::/112}
+POD_SUBNET6=${POD_SUBNET6:-fd00:10:244::/56}
 
 # Traffic the node sends to a ClusterIP is redirected by pf on output, keeping
 # its source address, so that must be an address the endpoint can reply to:
@@ -337,6 +346,14 @@ route_service_subnet() {
 	sudo route -q delete -net "${SERVICE_SUBNET}" 2>/dev/null || true
 	sudo route -q add -net "${SERVICE_SUBNET}" -interface "${svcif}"
 	echo "Service CIDR ${SERVICE_SUBNET} routed via ${svcif}"
+	[ -n "${NODE_IP6:-}" ] || return 0
+	svcif6=$(ifconfig | awk -v ip="${NODE_IP6}" '/^[a-z]/ {i=$1; sub(":$", "", i)} $1 == "inet6" && $2 == ip {print i}')
+	[ -n "$svcif6" ] || { echo "NODE_IP6 ${NODE_IP6} not found on any interface"; return 1; }
+	sudo sysrc ipv6_static_routes+=" k8ssvc6" > /dev/null
+	sudo sysrc ipv6_route_k8ssvc6="-net ${SERVICE_SUBNET6} -interface ${svcif6}" > /dev/null
+	sudo route -q delete -inet6 -net "${SERVICE_SUBNET6}" 2>/dev/null || true
+	sudo route -q add -inet6 -net "${SERVICE_SUBNET6}" -interface "${svcif6}"
+	echo "Service CIDR ${SERVICE_SUBNET6} routed via ${svcif6}"
 }
 route_service_subnet
 
@@ -411,8 +428,8 @@ controllerManager:
     readOnly: true
     pathType: File
 networking:
-  serviceSubnet: ${SERVICE_SUBNET}
-  podSubnet: 10.244.0.0/16
+  serviceSubnet: ${SERVICE_SUBNET}${NODE_IP6:+,${SERVICE_SUBNET6}}
+  podSubnet: 10.244.0.0/16${NODE_IP6:+,${POD_SUBNET6}}
 ---
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -445,7 +462,7 @@ localAPIEndpoint:
 nodeRegistration:
   kubeletExtraArgs:
   - name: node-ip
-    value: ${NODE_IP}
+    value: ${NODE_IP}${NODE_IP6:+,${NODE_IP6}}
 EOF
 fi
 
@@ -456,6 +473,19 @@ while [ ! -S /var/run/crio/crio.sock ]; do
 done
 echo "crio is running"
 
+# add_ipv6_range CIDR6: copy a CNI config from stdin, adding an IPv6 default route and a
+# second (IPv6) range, CIDR6 with its ::1 as gateway. Without CIDR6, copy it unchanged.
+add_ipv6_range() {
+	[ -n "$1" ] || { cat; return; }
+	awk -v s6="$1" -v g6="${1%/*}1" '
+	/"dst": "0\.0\.0\.0\/0"/ { print; getline; print "          },"; print "          {"
+		print "            \"dst\": \"::/0\""; print; next }
+	/"gateway": / { print; getline; print; print "          ],"; print "          ["; print "            {"
+		print "              \"subnet\": \"" s6 "\","; print "              \"gateway\": \"" g6 "\""
+		print "            }"; next }
+	{ print }'
+}
+
 # Per-node CNI config: host-local IPAM over this node's podCIDR (allocated by the
 # controller-manager from podSubnet), so pod IPs don't collide across nodes. Assumes /24s.
 write_cni_config() {
@@ -463,6 +493,13 @@ write_cni_config() {
 	until cidr=$(sudo kubectl --kubeconfig $kc get node "$(hostname)" -o jsonpath='{.spec.podCIDR}' 2>/dev/null) && [ -n "$cidr" ]; do
 		echo "Waiting for this node's podCIDR"; sleep 2
 	done
+	# Dual-stack: the IPv6 pod CIDR comes second.
+	cidr6=
+	if [ -n "${NODE_IP6:-}" ]; then
+		until cidr6=$(sudo kubectl --kubeconfig $kc get node "$(hostname)" -o jsonpath='{.spec.podCIDRs[1]}' 2>/dev/null) && [ -n "$cidr6" ]; do
+			echo "Waiting for this node's IPv6 podCIDR"; sleep 2
+		done
+	fi
 	p=${cidr%.*/*}
 	# kubeadm reset leaves the CNI bridge with its old address (e.g. a /16 from a
 	# single-node config); give it this node's gateway/prefix.
@@ -471,8 +508,8 @@ write_cni_config() {
 	fi
 	sed -e "s|10.244.0.0/16|${cidr}|" -e "s|10.244.0.2\"|${p}.2\"|" \
 	    -e "s|10.244.0.254|${p}.254|" -e "s|10.244.0.1\"|${p}.1\"|" files/10-kubetest.conflist |
-	    sudo tee /usr/local/etc/cni/net.d/10-kubetest.conflist > /dev/null
-	echo "CNI: pod subnet ${cidr}"
+	    add_ipv6_range "$cidr6" | sudo tee /usr/local/etc/cni/net.d/10-kubetest.conflist > /dev/null
+	echo "CNI: pod subnet ${cidr}${cidr6:+ ${cidr6}}"
 }
 
 # host-gw routes to the other nodes' pod CIDRs (no-op on a single node).
@@ -511,7 +548,7 @@ discovery:
 nodeRegistration:
   kubeletExtraArgs:
   - name: node-ip
-    value: ${NODE_IP:?NODE_IP is required to join}
+    value: ${NODE_IP:?NODE_IP is required to join}${NODE_IP6:+,${NODE_IP6}}
 EOF
 	sudo kubeadm join --config ./kubeadm-join.yaml || exit 1
 	write_cni_config
