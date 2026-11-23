@@ -298,6 +298,8 @@ fi
 		sudo service kubelet stop
 	fi
 	sudo install -m 755 files/kubelet /usr/local/etc/rc.d
+	sudo mkdir -p /usr/local/etc/newsyslog.conf.d
+	sudo install -m 644 files/kubernetes-newsyslog.conf /usr/local/etc/newsyslog.conf.d/kubernetes.conf
 	cd kubernetes
 	git fetch origin ${K8S_BRANCH}
 	git checkout -B ${K8S_BRANCH} origin/${K8S_BRANCH}
