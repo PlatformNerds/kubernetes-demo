@@ -1,7 +1,8 @@
 #!/bin/sh
 # bsd-hostgw: minimal "host-gw" pod networking for multi-node FreeBSD clusters.
-# Every node routes each other node's pod CIDR (node.spec.podCIDR) via that node's
-# InternalIP, like flannel's host-gw backend. Requires the nodes to share an L2 network.
+# Every node routes each other node's pod CIDRs (node.spec.podCIDRs, IPv4 and IPv6 on a
+# dual-stack cluster) via that node's InternalIP of the same family, like flannel's host-gw
+# backend. Requires the nodes to share an L2 network.
 # Runs as a loop (see files/bsd_hostgw rc script).
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin   # rc.d gives a minimal PATH
 # Own ServiceAccount (nodes get/list/watch): the Node authorizer does not let a
@@ -9,17 +10,37 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin   # rc.d gives
 KUBECONFIG=${KUBECONFIG:-/usr/local/etc/bsd-hostgw/kubeconfig}
 INTERVAL=${INTERVAL:-30}
 self=$(hostname)
+
+# route_to CIDR GATEWAY NODE: (re)point the route for CIDR at GATEWAY.
+route_to() {
+	case $1 in *:*) fam=-inet6 ;; *) fam=-inet ;; esac
+	cur=$(route -n get $fam -net "$1" 2>/dev/null | awk '/gateway:/ {print $2}')
+	[ "$cur" = "$2" ] && return
+	route -q -n delete $fam -net "$1" >/dev/null 2>&1
+	route -q -n add $fam -net "$1" "$2" && echo "$(date) route $1 -> $2 ($3)"
+}
+
 while :; do
+	# One line per node: name, then "|"-separated pod CIDRs and InternalIPs.
 	kubectl --kubeconfig "$KUBECONFIG" get nodes -o \
-	    jsonpath='{range .items[*]}{.metadata.name} {.spec.podCIDR} {.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
+	    jsonpath='{range .items[*]}{.metadata.name} {.spec.podCIDRs[*]} | {.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
 	    2>>/var/log/bsd-hostgw.err |
-	while read -r name cidr ip; do
-		[ "$name" = "$self" ] || [ -z "$cidr" ] || [ -z "$ip" ] && continue
-		cur=$(route -n get -net "$cidr" 2>/dev/null | awk '/gateway:/ {print $2}')
-		if [ "$cur" != "$ip" ]; then
-			route -q -n delete -net "$cidr" >/dev/null 2>&1
-			route -q -n add -net "$cidr" "$ip" && echo "$(date) route $cidr -> $ip ($name)"
-		fi
+	while read -r line; do
+		name=${line%% *}
+		rest=${line#* }
+		cidrs=${rest%%|*}
+		ips=${rest#*|}
+		[ "$name" = "$self" ] && continue
+		for cidr in $cidrs; do
+			gw=
+			for ip in $ips; do
+				case $cidr in
+				*:*) case $ip in *:*) gw=$ip; break ;; esac ;;
+				*) case $ip in *:*) ;; *) gw=$ip; break ;; esac ;;
+				esac
+			done
+			[ -n "$gw" ] && route_to "$cidr" "$gw" "$name"
+		done
 	done
 	sleep "$INTERVAL"
 done
