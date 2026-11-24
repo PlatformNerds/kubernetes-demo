@@ -100,6 +100,9 @@ ensure_sysctl 'net.inet.ip.forwarding=1'
 # Dual-stack (NODE_IP6 set, see below): route IPv6 too.
 if [ -n "${NODE_IP6:-}" ]; then
 	ensure_sysctl 'net.inet6.ip6.forwarding=1'
+	# A forwarding node ignores router advertisements unless this is set, so an uplink
+	# configured by SLAAC would lose its IPv6 address and default route.
+	ensure_sysctl 'net.inet6.ip6.rfc6204w3=1'
 	sudo sysrc ipv6_gateway_enable=YES > /dev/null
 fi
 ensure_sysctl 'net.link.bridge.pfil_member=1'
@@ -182,6 +185,15 @@ fi
 if ! grep -q 'from 10.244.0.0/16 to ! 10.244.0.0/16' /etc/pf.conf; then
 	sudo sed -i '' '/^nat on \$v4egress_if inet from <cni-nat>/a\
 nat on $v4egress_if inet from 10.244.0.0/16 to ! 10.244.0.0/16 -> ($v4egress_if)
+' /etc/pf.conf
+	sudo pfctl -nf /etc/pf.conf && sudo service pf reload
+fi
+# Dual-stack: the same for the IPv6 pod range, so pods reach IPv6 hosts outside the cluster
+# (NAT66 to the egress interface's address; pf leaves link-local addresses out).
+pfx6=${POD_SUBNET6:-fd00:10:244::/56}
+if [ -n "${NODE_IP6:-}" ] && ! sudo grep -q "from ${pfx6} to" /etc/pf.conf; then
+	sudo sed -i '' '/^nat on \$v6egress_if inet6 from <cni-nat>/a\
+nat on $v6egress_if inet6 from '"$pfx6"' to ! '"$pfx6"' -> ($v6egress_if)
 ' /etc/pf.conf
 	sudo pfctl -nf /etc/pf.conf && sudo service pf reload
 fi
