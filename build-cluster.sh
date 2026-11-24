@@ -305,6 +305,15 @@ fi
 	sudo sysrc crio_enable=YES
 )
 
+# kubelet, kubeadm and kube-proxy report their version from `git describe`, which needs release tags; a
+# fork's branch has none, so they would say "v0.0.0-master+$Format:%H$" and kubeadm's preflight check
+# refuses such a kubelet. Stamp them from the branch name (vX.Y.Z) and commit instead, unless set.
+k8s_version() {
+	if [ -n "${KUBE_GIT_VERSION:-}" ]; then echo "$KUBE_GIT_VERSION"; return; fi
+	v=$(echo "${K8S_BRANCH}" | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+	[ -n "$v" ] && echo "${v}-bsdk8s+$(git rev-parse --short=11 HEAD)"
+}
+
 # Build and install kubelet
 echo "Building kubelet, the node agent running on each node in the cluster"
 if [ ! -d kubernetes ]; then
@@ -320,6 +329,7 @@ fi
 	cd kubernetes
 	git fetch origin ${K8S_BRANCH}
 	git checkout -B ${K8S_BRANCH} origin/${K8S_BRANCH}
+	KUBE_GIT_VERSION=$(k8s_version); export KUBE_GIT_VERSION
 	gmake WHAT=cmd/kubelet
 	sudo install _output/local/go/bin/kubelet /usr/local/bin
 	sudo sysrc kubelet_enable=YES
@@ -331,6 +341,7 @@ echo "Building kubeadm, a tool for creating and managing clusters"
 	cd kubernetes
 	# bsdk8s branch carries kubelet + kube-proxy + kubeadm patches together
 	git checkout -B ${K8S_BRANCH} origin/${K8S_BRANCH}
+	KUBE_GIT_VERSION=$(k8s_version); export KUBE_GIT_VERSION
 	gmake WHAT=cmd/kubeadm
 	sudo install _output/local/go/bin/kubeadm /usr/local/bin
 	# kube-proxy runs on the host (see files/kube-proxy for why)
