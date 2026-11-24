@@ -50,6 +50,8 @@ the cluster network, and the CNI config and cross-node routes (bsd-hostgw) follo
 CIDR the control plane gives the node. For an IPv4/IPv6 dual-stack cluster also set
 `NODE_IP6` (e.g. `fd00:100::1`) on every node; the IPv6 Service and pod ranges default to
 `fd00:10:96::/112` and `fd00:10:244::/56` (`SERVICE_SUBNET6`, `POD_SUBNET6`).
+For an IPv6-only cluster set `IPV6_ONLY=yes` and `NODE_IP6` (no `NODE_IP`); the kubelet's resolver file then keeps the
+node's IPv6 nameservers, so the node needs one.
 
 Notes
 =====

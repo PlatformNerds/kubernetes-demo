@@ -7,6 +7,13 @@ if [ $# != 1 ]; then
 	exit 1
 fi
 netif=$1; shift
+# Addresses. Multi-node: NODE_IP is this node's address on the cluster network; dual-stack: also
+# NODE_IP6. IPv6-only (IPV6_ONLY=yes): NODE_IP6 alone, and Services, pods and nodes are IPv6 only.
+if [ "${IPV6_ONLY:-}" = yes ]; then
+	[ -n "${NODE_IP6:-}" ] || { echo "IPV6_ONLY=yes needs NODE_IP6"; exit 1; }
+	NODE_IP=
+fi
+NODE_IPS=${NODE_IP:-}${NODE_IP:+${NODE_IP6:+,}}${NODE_IP6:-}
 
 # BSDKubernetes: build from the (public) PlatformNerds forks by default. To build dfr's
 # upstream branches instead:
@@ -202,7 +209,9 @@ fi
 # nameservers: an IPv6 one the pod network cannot reach (e.g. QEMU's fec0::3)
 # makes a share of CoreDNS forwards time out.
 sudo mkdir -p /usr/local/etc/kubernetes
-awk '$1 != "nameserver" || $2 !~ /:/' /etc/resolv.conf | sudo tee /usr/local/etc/kubernetes/resolv.conf > /dev/null
+# IPv6-only: the other way round, IPv6 nameservers only.
+if [ "${IPV6_ONLY:-}" = yes ]; then keep='$2 ~ /:/'; else keep='$2 !~ /:/'; fi
+awk "\$1 != \"nameserver\" || $keep" /etc/resolv.conf | sudo tee /usr/local/etc/kubernetes/resolv.conf > /dev/null
 grep -q '^nameserver' /usr/local/etc/kubernetes/resolv.conf || sudo cp /etc/resolv.conf /usr/local/etc/kubernetes/resolv.conf
 
 # Linux images (RuntimeClass "linux"): run under the Linux ABI in jails.
@@ -355,13 +364,21 @@ SERVICE_SUBNET=${SERVICE_SUBNET:-10.96.0.0/12}
 # fd00:100::1) on every node. These are the IPv6 Service and pod ranges then.
 SERVICE_SUBNET6=${SERVICE_SUBNET6:-fd00:10:96::/112}
 POD_SUBNET6=${POD_SUBNET6:-fd00:10:244::/56}
+if [ "${IPV6_ONLY:-}" = yes ]; then
+	SVC_SUBNETS=$SERVICE_SUBNET6; POD_SUBNETS=$POD_SUBNET6
+	# kube-proxy's healthz and metrics, on IPv6
+	KP_BIND='bindAddress: "::"'
+else
+	SVC_SUBNETS=${SERVICE_SUBNET}${NODE_IP6:+,${SERVICE_SUBNET6}}; POD_SUBNETS=10.244.0.0/16${NODE_IP6:+,${POD_SUBNET6}}
+	KP_BIND=
+fi
 
 # Traffic the node sends to a ClusterIP is redirected by pf on output, keeping
 # its source address, so that must be an address the endpoint can reply to:
 # on a multi-homed node, route the Service CIDR via the NODE_IP interface
 # (otherwise it follows the default route, e.g. a NAT interface).
 route_service_subnet() {
-	[ -n "${NODE_IP:-}" ] || return 0
+	if [ -n "${NODE_IP:-}" ]; then
 	svcif=$(ifconfig | awk -v ip="${NODE_IP}" '/^[a-z]/ {i=$1; sub(":$", "", i)} $1 == "inet" && $2 == ip {print i}')
 	[ -n "$svcif" ] || { echo "NODE_IP ${NODE_IP} not found on any interface"; return 1; }
 	sudo sysrc static_routes+=" k8ssvc" > /dev/null
@@ -369,6 +386,7 @@ route_service_subnet() {
 	sudo route -q delete -net "${SERVICE_SUBNET}" 2>/dev/null || true
 	sudo route -q add -net "${SERVICE_SUBNET}" -interface "${svcif}"
 	echo "Service CIDR ${SERVICE_SUBNET} routed via ${svcif}"
+	fi
 	[ -n "${NODE_IP6:-}" ] || return 0
 	svcif6=$(ifconfig | awk -v ip="${NODE_IP6}" '/^[a-z]/ {i=$1; sub(":$", "", i)} $1 == "inet6" && $2 == ip {print i}')
 	[ -n "$svcif6" ] || { echo "NODE_IP6 ${NODE_IP6} not found on any interface"; return 1; }
@@ -451,8 +469,8 @@ controllerManager:
     readOnly: true
     pathType: File
 networking:
-  serviceSubnet: ${SERVICE_SUBNET}${NODE_IP6:+,${SERVICE_SUBNET6}}
-  podSubnet: 10.244.0.0/16${NODE_IP6:+,${POD_SUBNET6}}
+  serviceSubnet: ${SVC_SUBNETS}
+  podSubnet: ${POD_SUBNETS}
 ---
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -474,18 +492,19 @@ kind: KubeProxyConfiguration
 # (the whole cluster CIDR) a pod calling another node's NodePort would be
 # short-circuited instead of treated as external, as on Linux.
 detectLocalMode: NodeCIDR
+${KP_BIND}
 EOF
-if [ -n "${NODE_IP:-}" ]; then
+if [ -n "${NODE_IPS}" ]; then
 	cat >>kubeadm-config.yaml <<EOF
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 localAPIEndpoint:
-  advertiseAddress: ${NODE_IP}
+  advertiseAddress: ${NODE_IP:-$NODE_IP6}
 nodeRegistration:
   kubeletExtraArgs:
   - name: node-ip
-    value: ${NODE_IP}${NODE_IP6:+,${NODE_IP6}}
+    value: ${NODE_IPS}
 EOF
 fi
 
@@ -513,6 +532,17 @@ add_ipv6_range() {
 # controller-manager from podSubnet), so pod IPs don't collide across nodes. Assumes /24s.
 write_cni_config() {
 	kc=/usr/local/etc/kubernetes/kubelet.conf
+	# IPv6-only: the template's IPv4 range becomes the node's IPv6 one (gateway ::1, route ::/0).
+	if [ "${IPV6_ONLY:-}" = yes ]; then
+		until cidr6=$(sudo kubectl --kubeconfig $kc get node "$(hostname)" -o jsonpath='{.spec.podCIDR}' 2>/dev/null) && [ -n "$cidr6" ]; do
+			echo "Waiting for this node's podCIDR"; sleep 2
+		done
+		sed -e '/"rangeStart"/d' -e '/"rangeEnd"/d' -e 's|"dst": "0\.0\.0\.0/0"|"dst": "::/0"|' \
+		    -e "s|10.244.0.0/16|${cidr6}|" -e "s|\"10.244.0.1\"|\"${cidr6%/*}1\"|" files/10-kubetest.conflist |
+		    sudo tee /usr/local/etc/cni/net.d/10-kubetest.conflist > /dev/null
+		echo "CNI: pod subnet ${cidr6}"
+		return
+	fi
 	until cidr=$(sudo kubectl --kubeconfig $kc get node "$(hostname)" -o jsonpath='{.spec.podCIDR}' 2>/dev/null) && [ -n "$cidr" ]; do
 		echo "Waiting for this node's podCIDR"; sleep 2
 	done
@@ -571,7 +601,7 @@ discovery:
 nodeRegistration:
   kubeletExtraArgs:
   - name: node-ip
-    value: ${NODE_IP:?NODE_IP is required to join}${NODE_IP6:+,${NODE_IP6}}
+    value: ${NODE_IPS:?NODE_IP (or NODE_IP6 with IPV6_ONLY=yes) is required to join}
 EOF
 	sudo kubeadm join --config ./kubeadm-join.yaml || exit 1
 	write_cni_config
