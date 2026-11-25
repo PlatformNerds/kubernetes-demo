@@ -590,9 +590,15 @@ install_hostgw() {
 sudo rm -f /usr/local/etc/cni/net.d/10-kubetest.conflist
 
 if [ -n "${JOIN_ENDPOINT:-}" ]; then
+	# The kubelet config comes from the cluster, so a Linux control plane's would give pods
+	# systemd-resolved's resolv.conf (kubeadm then drops it); use the same file as kubeadm init here.
+	mkdir -p kubeadm-join-patches
+	echo "resolvConf: /usr/local/etc/kubernetes/resolv.conf" > kubeadm-join-patches/kubeletconfiguration.yaml
 	cat >kubeadm-join.yaml <<EOF
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration
+patches:
+  directory: $(pwd)/kubeadm-join-patches
 discovery:
   bootstrapToken:
     apiServerEndpoint: ${JOIN_ENDPOINT}
