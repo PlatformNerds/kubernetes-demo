@@ -292,6 +292,25 @@ EOF
 	sudo mv crictl.yaml-tmp /usr/local/etc/crictl.yaml
 )
 
+# portmap CNI plugin with host ports for the node's own connections (127.0.0.1 or the node IP:
+# `pass out quick on lo0 ... rdr-to`); the packaged one maps only connections arriving from outside.
+# The package's binary is kept as portmap.pkg (a package upgrade would put it back).
+CNI_PLUGINS_BRANCH=${CNI_PLUGINS_BRANCH-bsdk8s/portmap-host}
+if [ -n "${CNI_PLUGINS_BRANCH}" ]; then
+	echo "Building the portmap CNI plugin (${CNI_PLUGINS_BRANCH})"
+	if [ ! -d cni-plugins ]; then
+		git clone -b ${CNI_PLUGINS_BRANCH} ${BSDK8S_GIT_BASE}/cni-plugins.git
+	fi
+	(
+		cd cni-plugins
+		git pull
+		go build -o portmap ./plugins/meta/portmap || exit 1
+		cni=/usr/local/libexec/cni
+		[ -f $cni/portmap.pkg ] || sudo cp $cni/portmap $cni/portmap.pkg
+		sudo install -m 755 portmap $cni/portmap
+	)
+fi
+
 # Build and install CRI-O
 echo "Building CRI-O"
 if [ ! -d cri-o ]; then
