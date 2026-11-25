@@ -304,7 +304,7 @@ if [ -n "${CNI_PLUGINS_BRANCH}" ]; then
 	(
 		cd cni-plugins
 		git pull
-		go build -o portmap ./plugins/meta/portmap || exit 1
+		GOFLAGS=-mod=vendor go build -o portmap ./plugins/freebsd/meta/portmap || exit 1
 		cni=/usr/local/libexec/cni
 		[ -f $cni/portmap.pkg ] || sudo cp $cni/portmap $cni/portmap.pkg
 		sudo install -m 755 portmap $cni/portmap
